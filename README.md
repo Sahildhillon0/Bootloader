@@ -234,12 +234,3 @@ The `EDX=00000080` confirms BIOS passed drive 0x80 (first HDD) in DL. ✅
 | "Disk read failed!" on screen | INT 13h error, wrong CHS | Check `STAGE2_START_LBA` and drive number |
 
 ---
-
-## Next: Stage 2
-
-Stage 2 will add:
-- A proper second-stage binary loaded at `0x0500`
-- INT 13h with retry and error reporting
-- Foundation for FAT12 parser
-
-Reply **"continue to stage 2"** when ready.
