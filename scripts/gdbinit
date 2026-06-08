@@ -1,0 +1,48 @@
+# =============================================================================
+# scripts/gdbinit — GDB startup script for bootloader debugging
+# =============================================================================
+# Usage:
+#   1. Start QEMU in debug mode: make debug   (or ./scripts/run_qemu.sh --debug)
+#   2. In another terminal:      gdb -x scripts/gdbinit
+# =============================================================================
+
+# Connect to QEMU's GDB stub on localhost:1234
+target remote localhost:1234
+
+# The CPU starts in 16-bit real mode at 0xFFFFFFF0 (BIOS reset vector).
+# BIOS then loads our MBR to 0x7C00. We want to break there.
+set architecture i8086
+
+# Break at the very first instruction of our boot sector
+break *0x7C00
+
+# Display registers automatically on every break
+display/x $cs
+display/x $ip
+display/x $eax
+display/x $esp
+
+# Useful helper commands:
+#
+# Inspect boot sector in memory:
+#   x/32xb 0x7c00          — hex dump 32 bytes at 0x7C00
+#   x/10i  0x7c00          — disassemble 10 instructions at 0x7C00
+#
+# Inspect stack:
+#   x/8xw  $esp            — show 8 words on the stack
+#
+# Continue execution:
+#   continue   (or: c)
+#
+# Step one instruction:
+#   stepi      (or: si)
+#
+# Switch to 32-bit mode after protected mode transition (Stage 4):
+#   set architecture i386
+#
+# Switch to 64-bit mode after long mode transition (Stage 5):
+#   set architecture i386:x86-64
+
+echo "\n[GDB] Connected to QEMU. CPU halted at reset vector.\n"
+echo "[GDB] Type 'continue' to run until 0x7C00 breakpoint.\n"
+echo "[GDB] Type 'help' for GDB commands.\n"
