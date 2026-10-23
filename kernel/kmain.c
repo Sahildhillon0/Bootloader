@@ -1,16 +1,20 @@
 /* kmain.c — kernel entry in C
  *
  * Called from entry.asm with the boot_info stage2 filled in. Brings up the
- * console, then the CPU tables, then interrupts.
+ * console, then the CPU tables, then interrupts and drivers, then the shell.
  */
 #include <stdint.h>
+#include "ata.h"
 #include "bootinfo.h"
 #include "console.h"
+#include "fat12.h"
 #include "gdt.h"
 #include "idt.h"
 #include "io.h"
+#include "keyboard.h"
 #include "pic.h"
 #include "serial.h"
+#include "shell.h"
 #include "timer.h"
 #include "vga.h"
 
@@ -72,7 +76,19 @@ void kmain(struct boot_info *bi)
     kprintf("[KERNEL] PIT running at %u Hz, %lu ticks so far\n",
             TIMER_HZ, timer_ticks());
 
-    kprintf("[KERNEL] Idle.\n");
-    for (;;)
-        hlt();
+    keyboard_init();
+    kprintf("[KERNEL] PS/2 keyboard on IRQ 1\n");
+
+    if (ata_init()) {
+        kprintf("[KERNEL] ATA disk: %s, %u sectors\n", ata_info()->model,
+                ata_info()->sectors);
+        if (fat12_mount())
+            kprintf("[KERNEL] FAT12 volume mounted\n");
+        else
+            kprintf("[KERNEL] FAT12 mount failed\n");
+    } else {
+        kprintf("[KERNEL] No ATA disk on the primary master\n");
+    }
+
+    shell_run(bi);
 }

@@ -32,7 +32,7 @@ bootloader/
 | 5 | Long mode (64-bit) | ✅ |
 | 6 | ELF loader (C) | ✅ |
 | 7 | Simple kernel + VGA | ✅ |
-| 8 | Shell + keyboard + ATA | 🔜 |
+| 8 | Shell + keyboard + ATA | ✅ |
 
 ---
 

@@ -185,7 +185,7 @@ debug: $(DISK_IMG)
 
 .PHONY: test
 test: $(DISK_IMG)
-	@$(SCRIPTS_DIR)/test_boot.sh $(DISK_IMG)
+	@python3 $(SCRIPTS_DIR)/test_boot.py $(DISK_IMG)
 
 # =============================================================================
 # Inspection
