@@ -1,236 +1,247 @@
 # x86_64 Bootloader — From Scratch
 
-A step-by-step bootloader for x86_64 + BIOS, built progressively.
-Targets: QEMU, Bochs. Features: FAT12, protected mode, long mode, ELF loader,
-VGA, serial, keyboard, ATA, and a simple kernel shell.
+A BIOS bootloader for x86_64, built stage by stage, that boots a small 64-bit
+C kernel with a shell. Everything is written from scratch: no GRUB, no libc,
+no cross-compiler.
+
+```
+BIOS → stage1 (512 B, FAT12 boot sector)
+     → stage2 (real mode → protected mode → long mode, C ELF loader)
+     → KERNEL.ELF (64-bit C: VGA, serial, IDT, timer, keyboard, ATA, FAT12, shell)
+```
+
+Runs in QEMU. The disk image is a normal 1.44 MB FAT12 volume: you can
+`mdir`/`mcopy` files in and out of it, and the kernel reads them back over ATA.
 
 ---
 
-## Project Structure
-
-```
-bootloader/
-├── boot/           Assembly source — stage1, stage2, FAT12, GDT, paging
-├── kernel/         C source — ELF loader, VGA, serial, keyboard, shell
-├── include/        Shared headers — GDT, ELF, memory map, multiboot
-├── docs/           Per-stage deep-dive documentation
-├── scripts/        run_qemu.sh, gdbinit, bochs config
-├── build/          All compiled output (gitignored)
-└── Makefile
-```
-
----
-
-## Build Stages
-
-| Stage | Branch of work | Status |
-|-------|---------------|--------|
-| 1 | Minimal boot sector (FAT12 BPB) | ✅ |
-| 2 | Disk load via INT 13h, A20, E820 | ✅ |
-| 3 | FAT12 + file search | ✅ |
-| 4 | Protected mode (32-bit) | ✅ |
-| 5 | Long mode (64-bit) | ✅ |
-| 6 | ELF loader (C) | ✅ |
-| 7 | Simple kernel + VGA | ✅ |
-| 8 | Shell + keyboard + ATA | ✅ |
-
----
-
-## Stage 1 — Minimal Boot Sector
-
-### What happens at power-on
-
-```
-Power on
-   │
-   ▼
-CPU starts at 0xFFFFFFF0 (reset vector, 16-bit real mode)
-   │
-   ▼
-BIOS POST (Power-On Self-Test)
-   │  checks RAM, detects devices, initialises IVT
-   ▼
-BIOS reads 512 bytes from LBA 0 into 0x0000:0x7C00
-   │  verifies bytes 510–511 == 0x55 0xAA
-   ▼
-BIOS jumps to 0x0000:0x7C00
-   │
-   ▼
-stage1.asm starts executing  ← WE ARE HERE (Stage 1)
-   │  fixes segment registers, sets up stack
-   │  prints banner via INT 10h
-   │  loads Stage 2 via INT 13h
-   ▼
-jmp STAGE2_LOAD_SEG:0x0000
-```
-
-### Real-mode memory layout
-
-```
-0x00000 ┌─────────────────────────────┐
-        │  IVT  (Interrupt Vector Table)│  1 KiB
-0x00400 ├─────────────────────────────┤
-        │  BDA  (BIOS Data Area)       │  256 bytes
-0x00500 ├─────────────────────────────┤
-        │                             │
-        │  Stage 2 loaded here        │  ← 0x0500 (29 KiB free)
-        │                             │
-0x07C00 ├─────────────────────────────┤
-        │  Stage 1 (this code, MBR)   │  512 bytes
-0x07E00 ├─────────────────────────────┤
-        │  Stack grows down from 7C00 │
-        │  (free ~480 KiB)            │
-0x80000 ├─────────────────────────────┤
-        │  EBDA                       │
-0xA0000 ├─────────────────────────────┤
-        │  VGA memory (0xB8000 text)  │
-0xC0000 ├─────────────────────────────┤
-        │  Option ROMs / BIOS         │
-0xFFFFF └─────────────────────────────┘
-```
-
-### Boot signature
-
-The BIOS checks the **last two bytes** of the 512-byte sector:
-- Byte 510 = `0x55`
-- Byte 511 = `0xAA`
-
-If missing → BIOS skips this device and tries the next boot option.
-
----
-
-## Toolchain Setup
-
-### Ubuntu / Debian
+## Quick start
 
 ```bash
-sudo apt update
-sudo apt install nasm gcc binutils qemu-system-x86 bochs bochs-x gdb xxd make
+# Arch
+sudo pacman -S nasm qemu-system-x86 qemu-ui-gtk mtools tinyxxd
+# Ubuntu / Debian
+sudo apt install nasm gcc qemu-system-x86 mtools xxd
+
+make            # build build/boot.img
+make run        # boot it (QEMU window, serial console on this terminal)
+make test       # automated end-to-end test (38 checks)
 ```
 
-### Verify versions
+Then, at the `boot>` prompt:
 
-```bash
-nasm --version          # >= 2.15
-qemu-system-x86_64 --version
-gdb --version
+```
+boot> ls
+  KERNEL.ELF      29680 bytes  cluster 2
+  HELLO.TXT          42 bytes  cluster 60
+boot> cat hello.txt
+Hello from HELLO.TXT on the FAT12 volume!
+boot> disk
+Model:   QEMU HARDDISK
+Serial:  QM00001
+Sectors: 2880 (1440 KiB)
+Boot drive (BIOS): 0x80
+boot> uptime
+Up 4.24 s (424 ticks at 100 Hz)
+```
+
+Type in the QEMU window (PS/2 keyboard) or in the terminal (COM1): both feed
+the same shell.
+
+---
+
+## Build stages
+
+Each stage is one commit in the history and has a deep-dive doc.
+
+| Stage | What it adds | Doc | Status |
+|-------|--------------|-----|--------|
+| 1 | Boot sector with a FAT12 BPB, loads stage2 | [docs/01-boot-sector.md](docs/01-boot-sector.md) | ✅ |
+| 2 | Disk load via INT 13h, A20, E820 memory map | [docs/02-stage2.md](docs/02-stage2.md) | ✅ |
+| 3 | FAT12 root directory search + cluster chain loader | [docs/03-fat12.md](docs/03-fat12.md) | ✅ |
+| 4 | GDT, 32-bit protected mode | [docs/04-protected-mode.md](docs/04-protected-mode.md) | ✅ |
+| 5 | Page tables, 64-bit long mode | [docs/05-long-mode.md](docs/05-long-mode.md) | ✅ |
+| 6 | ELF64 loader in C, kernel hand-off | [docs/06-elf-loader.md](docs/06-elf-loader.md) | ✅ |
+| 7 | C kernel: VGA, serial, GDT/IDT, PIC, PIT | [docs/07-kernel.md](docs/07-kernel.md) | ✅ |
+| 8 | PS/2 keyboard, ATA PIO, FAT12 driver, shell | [docs/08-shell-and-drivers.md](docs/08-shell-and-drivers.md) | ✅ |
+
+---
+
+## Boot log
+
+```
+x86_64 Bootloader v1.0
+[STAGE1] Loading stage2...
+[STAGE1] Jumping to stage2
+[STAGE2] Running at 0x7E00, boot drive 0x0080
+[STAGE2] A20 enabled
+[STAGE2] E820 memory map: 0x0007 entries
+[STAGE3] Loaded KERNEL.ELF from FAT12: 0x000073F0 bytes
+[STAGE2] Entering protected mode
+[STAGE4] 32-bit protected mode, flat 4 GiB segments
+[STAGE4] Page tables built, entering long mode
+[STAGE5] 64-bit long mode, first 1 GiB identity mapped
+[STAGE6] ELF segments loaded, jumping to kernel
+[KERNEL] Hello from the 64-bit C kernel
+[KERNEL] Loaded at 0x0000000000100000 - 0x00000000001209d2, boot drive 0x80
+[KERNEL] E820 memory map (7 entries):
+  ...
+[KERNEL] GDT and IDT loaded
+[IDT] Breakpoint at RIP=0000000000101952, resuming
+[KERNEL] PIT running at 100 Hz, 11 ticks so far
+[KERNEL] PS/2 keyboard on IRQ 1
+[KERNEL] ATA disk: QEMU HARDDISK, 2880 sectors
+[KERNEL] FAT12 volume mounted
+Type 'help' for a list of commands.
+boot>
+```
+
+Every line goes to both the VGA screen and COM1, from the first BIOS-assisted
+print in stage1 to the kernel shell.
+
+---
+
+## Project structure
+
+```
+boot/
+  stage1.asm       boot sector: BPB, loads sectors 1..63 to 0x7E00
+  stage2.asm       stage2 main flow, boot_info hand-off
+  disk.inc         INT 13h reads (LBA extensions, CHS fallback, retries)
+  print16.inc      real-mode output (BIOS teletype + COM1)
+  a20.inc          A20 gate: BIOS, port 0x92, keyboard controller
+  e820.inc         BIOS memory map
+  fat12.inc        FAT12 root search + cluster chain loader (real mode)
+  gdt.inc          GDT: 32-bit code/data, 64-bit code
+  print32.inc      protected-mode output (VGA memory + COM1)
+  paging.inc       CPUID check, identity-mapped page tables, long mode switch
+  print64.inc      long-mode output
+  elf_loader.c     ELF64 loader, runs inside stage2 in long mode
+  stage2.ld        links stage2 (asm + C) into a flat binary at 0x7E00
+kernel/
+  entry.asm        _start: stack, call kmain
+  kmain.c          init sequence
+  console.c        kprintf, VGA + serial fan-out
+  vga.c serial.c   text mode and COM1 drivers
+  gdt.c idt.c      CPU tables, exception reporting, IRQ dispatch
+  isr.asm          interrupt entry stubs
+  pic.c timer.c    8259 PIC remap, 8254 PIT at 100 Hz
+  keyboard.c       PS/2 keyboard + shared input queue
+  ata.c fat12.c    ATA PIO driver, read-only FAT12
+  shell.c          command shell
+  string.c io.h    freestanding helpers
+  kernel.ld        static ELF64 at 1 MiB
+include/
+  bootinfo.h       boot_info layout shared by stage2 and the kernel
+  elf.h            ELF64 structures
+rootfs/            files copied into the FAT12 image (HELLO.TXT)
+scripts/
+  test_boot.py     end-to-end test driver
+  run_qemu.sh      QEMU launcher (normal / --debug / --nographic)
+  gdbinit          GDB setup for the QEMU stub
+docs/              per-stage deep dives
 ```
 
 ---
 
-## Build & Run (Stage 1)
+## Disk layout
+
+The image is a 1.44 MB floppy-format FAT12 volume (2880 sectors). The BPB in
+sector 0 reserves 64 sectors, so stage2 lives in front of the filesystem and
+the filesystem stays valid.
+
+| LBA | Contents |
+|-----|----------|
+| 0 | stage1 + BPB (boot signature `55 AA` at offset 510) |
+| 1 – 63 | stage2 (up to 31.5 KiB) |
+| 64 – 72 | FAT #1 |
+| 73 – 81 | FAT #2 |
+| 82 – 95 | root directory (224 entries) |
+| 96 – 2879 | data clusters: `KERNEL.ELF`, `HELLO.TXT`, … |
 
 ```bash
-# Build the disk image
-make all
-
-# Verify the 0x55AA boot signature
-make verify
-
-# Inspect the binary
-make hexdump
-
-# Run in QEMU
-make run
+make verify                                # boot signature + FAT12 listing
+mdir  -i build/boot.img ::                 # list files
+mcopy -i build/boot.img notes.txt ::       # add a file (or drop it in rootfs/)
 ```
 
-### Expected output in QEMU window
+## Memory map
 
-```
-============================
-  x86_64 Bootloader v0.1
-============================
-  [STAGE1] Loading stage2...
-  [STAGE1] Jumping to stage2
-```
-
-Then QEMU will **hang or triple-fault** — Stage 2 doesn't exist yet.
-That is expected at Stage 1.
+| Physical | Used for |
+|----------|----------|
+| `0x00000 – 0x004FF` | IVT + BIOS Data Area |
+| `0x01000 – 0x03FFF` | page tables: PML4, PDPT, PD (kept by the kernel) |
+| `0x05000 – 0x055FF` | E820 memory map (up to 64 entries) |
+| `0x07C00 – 0x07DFF` | stage1, with the BPB stage2 reads |
+| `0x07E00 – 0x0FDFF` | stage2 |
+| `0x10000 – 0x5FFFF` | `KERNEL.ELF` file buffer (max 320 KiB) |
+| `0x60000 – 0x63FFF` | FAT12 root directory + FAT buffers (stage2) |
+| `0x70000 – 0x7FFFF` | stage2 long-mode stack (top at `0x80000`) |
+| `0xB8000` | VGA text buffer |
+| `0x100000 –` | kernel: `.text`, `.rodata`, `.data`, `.bss` (16 KiB stack inside) |
 
 ---
 
-## Hex Dump Walkthrough
+## Make targets
 
-```bash
-make hexdump
-```
+| Target | What it does |
+|--------|--------------|
+| `make` / `make all` | Build `build/boot.img` |
+| `make run` | QEMU with a window; serial console on stdio |
+| `make run-headless` | QEMU without a window; serial console only |
+| `make run-floppy` | Boot the image as a floppy (drive `0x00`, CHS reads, no ATA disk) |
+| `make debug` | QEMU frozen at reset with a GDB stub on `:1234` |
+| `make test` | End-to-end test (see below) |
+| `make hexdump` | First 64 bytes and boot signature of `stage1.bin` |
+| `make verify` | Check the boot signature and list the FAT12 root |
+| `make clean` | Remove `build/` |
 
-Expected output (truncated):
+## Testing
 
-```
-=== stage1.bin hex dump (first 64 bytes) ===
-00000000: ea05 7c00 00fa 31c0 8ed8 8ec0 8ee0 8ee8  ..|...1.........
-00000010: 8ed0 bc00 7cfb 8816 xxxx ...             .....|..........
-                                  ^^^^
-                              boot_drive variable offset
+`make test` runs `scripts/test_boot.py`, which drives QEMU through its
+serial port and monitor socket:
 
-=== Boot signature (last 2 bytes, should be 55 AA) ===
-000001fe: 55aa                                     U.
-```
+1. waits for every boot marker on COM1
+2. reads the VGA text buffer at `0xB8000` and checks what is on screen
+3. runs shell commands over serial (`help`, `ls`, `cat`, `disk`, `mem`, `uptime`, …)
+4. types `echo kbd` on the emulated PS/2 keyboard with `sendkey`
+5. runs `shutdown` and expects QEMU to power off
+6. reboots, runs `crash`, and checks the page fault report and `CR2`
+7. boots the image as a floppy and checks the shell copes without a disk
 
-Key offsets in the binary:
-| Offset | Content |
-|--------|---------|
-| `0x000` | `EA 05 7C 00 00` — far JMP to `0x0000:_init` |
-| `0x005` | `FA` — CLI (disable interrupts) |
-| `0x006` | `31 C0` — XOR AX, AX |
-| `0x1FE` | `55 AA` — boot signature |
-
----
-
-## Debugging (Stage 1)
-
-### Method 1: QEMU monitor
-
-```bash
-make run
-# In QEMU window, press: Ctrl-A  then  c
-```
-
-Useful QEMU monitor commands:
-```
-(qemu) info registers         # dump all CPU registers
-(qemu) x /32xb 0x7c00        # hex dump 32 bytes at 0x7C00
-(qemu) x /10i  0x7c00        # disassemble 10 instrs at 0x7C00
-(qemu) info mem               # memory map
-(qemu) q                      # quit
-```
-
-### Method 2: GDB + QEMU
-
-Terminal 1:
-```bash
-make debug        # QEMU starts frozen, GDB stub on :1234
-```
-
-Terminal 2:
-```bash
-gdb -x scripts/gdbinit
-(gdb) continue          # run until 0x7C00
-(gdb) x/32xb 0x7c00    # inspect boot sector in RAM
-(gdb) si                # step one instruction
-(gdb) info registers    # dump registers
-```
-
-### Expected QEMU log (`build/qemu.log`)
-
-After Stage 1 tries to jump to Stage 2 (which doesn't exist yet):
-```
-CPU Reset (CPU 0)
-EAX=00000000 EBX=... ECX=... EDX=00000080
-```
-The `EDX=00000080` confirms BIOS passed drive 0x80 (first HDD) in DL. ✅
+Serial output is saved to `build/test_serial.log`, the screen to `build/test_vga.txt`.
 
 ---
 
-## Common Issues
+## Debugging
+
+```bash
+make debug                    # terminal 1: QEMU waits for GDB
+gdb -x scripts/gdbinit        # terminal 2: breaks at 0x7C00
+```
+
+`build/kernel.elf` keeps its debug info (the copy on the disk is stripped),
+so once in long mode you can load kernel symbols:
+
+```
+(gdb) set architecture i386:x86-64
+(gdb) symbol-file build/kernel.elf
+(gdb) break kmain
+```
+
+QEMU's interrupt and reset trace goes to `build/qemu.log` with `make run`.
+A triple fault shows up there as `CPU Reset`, with the register state just
+before it.
+
+## Common issues
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| QEMU shows "Boot failed: not a bootable disk" | Missing 0x55AA | Run `make verify` |
-| `stage1.bin is N bytes (expected 512)` | Data section overflow | Remove content from boot sector |
-| Immediate reboot loop | Triple fault in stage1 | Use `make debug` + GDB to find crash |
-| Black screen, no text | Wrong segment setup or bad INT 10h | Check CS=0x0000 and BH=0 |
-| "Disk read failed!" on screen | INT 13h error, wrong CHS | Check `STAGE2_START_LBA` and drive number |
-
----
+| `Boot failed: not a bootable disk` | Missing `55 AA` | `make verify` |
+| `stage1.bin is N bytes (expected 512)` | Boot sector code too large | Move code to stage2 |
+| `stage2 does not fit in 63 sectors` | stage2.ld size assert | Raise `bpb_reserved` in stage1.asm and `RESERVED_SECTORS` in the Makefile together |
+| `[STAGE1] Disk read failed!` | INT 13h error | Check drive number and BPB geometry |
+| `[STAGE3] FATAL: KERNEL.ELF not found` | File missing from the image | `make clean all`, check `mdir -i build/boot.img ::` |
+| `[STAGE6] FATAL: bad kernel ELF: …` | Kernel ELF rejected | The message names the check that failed |
+| Reboot loop / QEMU exits at once | Triple fault | `make run`, then read `build/qemu.log` |
+| `ls: no ATA disk` | Booted as a floppy | Use `make run` (IDE disk) |

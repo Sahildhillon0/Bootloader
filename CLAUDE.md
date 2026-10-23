@@ -2,7 +2,9 @@
 
 x86_64 BIOS bootloader built stage by stage (see README.md for the roadmap).
 
-- Build: `make all`. Headless boot test: `make test` (serial output to stdout).
+- Build: `make all`. End-to-end test: `make test` (scripts/test_boot.py drives QEMU
+  over serial + monitor; must stay green before every commit).
+- Docs: one deep dive per stage in docs/; update the matching one with code changes.
 - Commits are authored by the repo owner only. Never add `Co-Authored-By` or
   any other contributor trailer to commit messages.
 

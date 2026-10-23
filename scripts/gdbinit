@@ -42,6 +42,12 @@ display/x $esp
 #
 # Switch to 64-bit mode after long mode transition (Stage 5):
 #   set architecture i386:x86-64
+#
+# Kernel source-level debugging (build/kernel.elf keeps its debug info):
+#   set architecture i386:x86-64
+#   symbol-file build/kernel.elf
+#   break kmain
+#   continue
 
 echo "\n[GDB] Connected to QEMU. CPU halted at reset vector.\n"
 echo "[GDB] Type 'continue' to run until 0x7C00 breakpoint.\n"
