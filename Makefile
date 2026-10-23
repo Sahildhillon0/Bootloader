@@ -40,7 +40,9 @@ RESERVED_SECTORS := 64
 FAT_SECTORS      := 9
 
 # --- Flags --------------------------------------------------------------------
-NASM_FLAGS := -i $(BOOT_DIR)/ -w+all
+# -w-reloc: absolute relocations are intended; the linker scripts keep the
+# real-mode code below 64 KiB
+NASM_FLAGS := -i $(BOOT_DIR)/ -w+all -w-reloc
 
 # Freestanding 64-bit C: no libc, no red zone (interrupts would trash it),
 # no SSE (nobody saves the FPU state), no PIC.
@@ -98,8 +100,7 @@ STAGE2_OBJS    := $(BUILD_DIR)/stage2.o $(BUILD_DIR)/elf_loader.o
 
 $(BUILD_DIR)/stage2.o: $(BOOT_DIR)/stage2.asm $(STAGE2_ASM_INC) | $(BUILD_DIR)
 	@echo "[NASM] stage2"
-	@# Absolute relocations are intended: stage2.ld keeps stage2 below 64 KiB
-	$(NASM) $(NASM_FLAGS) -w-reloc -f elf64 -o $@ $<
+	$(NASM) $(NASM_FLAGS) -f elf64 -o $@ $<
 
 $(BUILD_DIR)/elf_loader.o: $(BOOT_DIR)/elf_loader.c $(wildcard $(INCLUDE_DIR)/*.h) | $(BUILD_DIR)
 	@echo "[CC]   elf_loader"

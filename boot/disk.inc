@@ -50,6 +50,9 @@ read_sector:
     je   .chs
 
     ; --- LBA path: fill in the Disk Address Packet ---
+    ; The count is rewritten every time: a failed call may store the number
+    ; of sectors it did transfer (0) there.
+    mov  word [dap.count], 1
     mov  [dap.lba], ax
     mov  [dap.offset], bx
     mov  [dap.segment], es
@@ -100,7 +103,7 @@ align 4
 dap:
     db 0x10                     ; packet size
     db 0                        ; reserved
-    dw 1                        ; sectors to transfer
+.count:   dw 1                  ; sectors to transfer
 .offset:  dw 0
 .segment: dw 0
 .lba:     dd 0                  ; LBA bits 31..0 (only the low word is written)
