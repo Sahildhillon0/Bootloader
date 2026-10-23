@@ -17,6 +17,8 @@ EXPECT=(
     "[STAGE1] Jumping to stage2"
     "[STAGE2] A20 enabled"
     "[STAGE2] E820 memory map"
+    "[STAGE2] Loaded HELLO.TXT"
+    "Hello from HELLO.TXT"
 )
 
 timeout "$TIMEOUT" qemu-system-x86_64 \

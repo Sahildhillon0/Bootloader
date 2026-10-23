@@ -1,1 +1,1 @@
-Hello from a FAT12 file loaded over ATA PIO!
+Hello from HELLO.TXT on the FAT12 volume!

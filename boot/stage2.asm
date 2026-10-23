@@ -8,9 +8,12 @@
 ;   1. Initialise COM1 so every step is visible on the serial console.
 ;   2. Enable the A20 line.
 ;   3. Read the BIOS E820 memory map.
+;   4. Find a file in the FAT12 root directory and load it.
 ; =============================================================================
 
 [BITS 16]
+
+LOAD_SEG equ 0x1000             ; files are loaded to physical 0x10000
 
 extern __bss_start, __bss_end
 
@@ -61,6 +64,33 @@ stage2_start:
     mov  si, msg_e820_tail
     call print16
 
+    ; --- FAT12: load the file -------------------------------------------------
+    call detect_ext
+    call fat12_init
+    mov  si, file_name
+    mov  dx, LOAD_SEG
+    call fat12_load_file
+    jc   .file_missing
+    mov  [file_size], eax
+    mov  si, msg_loaded
+    call print16
+    mov  ax, [file_size]
+    call print_hex16
+    mov  si, msg_loaded_tail
+    call print16
+
+    ; Echo the file to the console
+    push ds
+    mov  cx, [file_size]
+    mov  ax, LOAD_SEG
+    mov  ds, ax
+    xor  si, si
+.echo:
+    lodsb
+    call putc16
+    loop .echo
+    pop  ds
+
     mov  si, msg_done
     call print16
     jmp  halt16
@@ -70,6 +100,16 @@ stage2_start:
     jmp  fatal16
 .e820_fail:
     mov  si, msg_e820_fail
+    jmp  fatal16
+.file_missing:
+    mov  si, msg_file_missing
+    jmp  fatal16
+
+; -----------------------------------------------------------------------------
+; disk_error — reached from read_sector after all retries fail
+; -----------------------------------------------------------------------------
+disk_error:
+    mov  si, msg_disk_error
     jmp  fatal16
 
 ; -----------------------------------------------------------------------------
@@ -85,6 +125,8 @@ halt16:
 %include "print16.inc"
 %include "a20.inc"
 %include "e820.inc"
+%include "fat12.inc"
+%include "disk.inc"
 
 ; -----------------------------------------------------------------------------
 ; Data
@@ -96,6 +138,11 @@ msg_crlf:       db 13, 10, 0
 msg_a20:        db "[STAGE2] A20 enabled", 13, 10, 0
 msg_e820:       db "[STAGE2] E820 memory map: 0x", 0
 msg_e820_tail:  db " entries", 13, 10, 0
+file_name:      db "HELLO   TXT"
+msg_loaded:     db "[STAGE2] Loaded HELLO.TXT from FAT12: 0x", 0
+msg_loaded_tail: db " bytes", 13, 10, 0
+msg_file_missing: db "[STAGE2] FATAL: file not found in FAT12 root", 13, 10, 0
+msg_disk_error: db "[STAGE2] FATAL: disk read failed", 13, 10, 0
 msg_done:       db "[STAGE2] Done, halting", 13, 10, 0
 msg_a20_fail:   db "[STAGE2] FATAL: could not enable A20", 13, 10, 0
 msg_e820_fail:  db "[STAGE2] FATAL: E820 memory map unavailable", 13, 10, 0
@@ -105,3 +152,9 @@ section .bss
 global boot_drive
 boot_drive:     resb 1
 e820_count:     resw 1
+use_ext:        resb 1
+fat_root_lba:   resw 1
+fat_root_secs:  resw 1
+fat_data_lba:   resw 1
+fat_file_size:  resd 1
+file_size:      resd 1
