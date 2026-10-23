@@ -3,18 +3,19 @@
 # =============================================================================
 # Toolchain requirements:
 #   nasm     >= 2.15   (assembler)
-#   gcc      >= 10     (cross-compiler, for later C stages)
-#   qemu     >= 5.0    (qemu-system-x86_64 or qemu-system-i386)
-#   bochs    >= 2.7    (optional alternate emulator)
-#   dd, xxd            (standard Linux utilities)
+#   gcc, ld            (host x86_64 toolchain, used freestanding)
+#   qemu     >= 5.0    (qemu-system-x86_64)
+#   mtools             (mcopy/mdir: write files into the FAT12 image)
+#   xxd                (hex dumps)
 #
-# Install on Ubuntu/Debian:
-#   sudo apt install nasm gcc qemu-system-x86 bochs bochs-x xxd
+# Install:
+#   Arch:          sudo pacman -S nasm qemu-system-x86 qemu-ui-gtk mtools tinyxxd
+#   Ubuntu/Debian: sudo apt install nasm gcc qemu-system-x86 mtools xxd
 # =============================================================================
 
 # --- Toolchain ----------------------------------------------------------------
 NASM    := nasm
-GCC     := gcc
+CC      := gcc
 LD      := ld
 QEMU    := qemu-system-x86_64
 DD      := dd
@@ -22,162 +23,165 @@ DD      := dd
 # --- Directories --------------------------------------------------------------
 BOOT_DIR    := boot
 KERNEL_DIR  := kernel
-BUILD_DIR   := build
 INCLUDE_DIR := include
+ROOTFS_DIR  := rootfs
+BUILD_DIR   := build
 SCRIPTS_DIR := scripts
-DOCS_DIR    := docs
 
 # --- Output files -------------------------------------------------------------
 DISK_IMG    := $(BUILD_DIR)/boot.img
 STAGE1_BIN  := $(BUILD_DIR)/stage1.bin
-STAGE2_BIN  := $(BUILD_DIR)/stage2.bin   # created in Stage 2
+STAGE2_BIN  := $(BUILD_DIR)/stage2.bin
+
+# --- Disk geometry (must match the BPB in boot/stage1.asm) --------------------
+# 1.44 MB = 2880 sectors; 64 reserved = stage1 + 63 sectors of stage2
+DISK_SECTORS     := 2880
+RESERVED_SECTORS := 64
+FAT_SECTORS      := 9
+
+# --- Flags --------------------------------------------------------------------
+NASM_FLAGS := -i $(BOOT_DIR)/ -w+all
+
+# Freestanding 64-bit C: no libc, no red zone (interrupts would trash it),
+# no SSE (nobody saves the FPU state), no PIC.
+CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra \
+          -m64 -ffreestanding -fno-builtin -nostdlib \
+          -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+          -mno-red-zone -mgeneral-regs-only -mcmodel=small \
+          -I$(INCLUDE_DIR)
+
+# mtools refuses some hand-made BPBs without this
+export MTOOLS_SKIP_CHECK := 1
 
 # --- QEMU flags ---------------------------------------------------------------
-# -drive      : attach our disk image as a raw floppy-style drive
-# -m          : RAM in megabytes
-# -monitor    : expose QEMU monitor on stdio (Ctrl-A c to enter monitor)
-# -serial     : route serial port 0 to stdio (we'll use this for debugging)
-# -no-reboot  : stop on triple fault instead of rebooting in a loop
-# -d          : trace CPU interrupts and guest errors (remove for quiet mode)
-QEMU_FLAGS  := \
-    -drive file=$(DISK_IMG),format=raw,index=0,media=disk \
-    -m 128M \
-    -monitor stdio \
-    -serial file:$(BUILD_DIR)/serial.log \
-    -no-reboot \
-    -d int,cpu_reset \
-    -D $(BUILD_DIR)/qemu.log
+# The image is attached as the primary IDE master: BIOS boots it as drive 0x80
+# and the kernel's ATA driver can read it back.
+QEMU_DRIVE  := -drive file=$(DISK_IMG),format=raw,if=ide,index=0,media=disk
+QEMU_COMMON := -m 128M -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04
 
-# QEMU flags for GDB debugging (Stage 4+)
-QEMU_DEBUG_FLAGS := \
-    $(QEMU_FLAGS) \
-    -S \
-    -gdb tcp::1234
+QEMU_FLAGS  := $(QEMU_DRIVE) $(QEMU_COMMON) \
+               -serial stdio \
+               -d int,cpu_reset,guest_errors -D $(BUILD_DIR)/qemu.log
+
+QEMU_DEBUG_FLAGS := $(QEMU_FLAGS) -S -gdb tcp::1234
 
 # =============================================================================
-# Default target — build everything available so far
+# Default target
 # =============================================================================
 .PHONY: all
 all: $(DISK_IMG)
 	@echo ""
 	@echo "Build complete: $(DISK_IMG)"
-	@echo "Run with: make run"
+	@echo "Run with: make run   (headless: make run-headless, tests: make test)"
 	@echo ""
 
-# =============================================================================
-# Create build directory
-# =============================================================================
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 # =============================================================================
-# Stage 1: Assemble the boot sector → flat 512-byte binary
+# Stage 1: boot sector (flat 512-byte binary)
 # =============================================================================
-$(STAGE1_BIN): $(BOOT_DIR)/stage1.asm | $(BUILD_DIR)
-	@echo "[NASM] Assembling stage1..."
-	$(NASM) -f bin \
-	        -o $@ \
-	        $<
-	@# Sanity check: boot sector must be exactly 512 bytes
+$(STAGE1_BIN): $(BOOT_DIR)/stage1.asm $(BOOT_DIR)/disk.inc | $(BUILD_DIR)
+	@echo "[NASM] stage1"
+	$(NASM) $(NASM_FLAGS) -f bin -o $@ $<
 	@size=$$(stat -c%s $@); \
 	 if [ $$size -ne 512 ]; then \
-	     echo "ERROR: stage1.bin is $$size bytes (expected 512)"; \
-	     exit 1; \
+	     echo "ERROR: stage1.bin is $$size bytes (expected 512)"; exit 1; \
 	 fi
-	@echo "[OK]   stage1.bin = $$(stat -c%s $@) bytes"
 
 # =============================================================================
-# Disk image construction
+# Stage 2: real mode → protected mode → long mode loader (asm + C)
 # =============================================================================
-# We create a 1.44MB floppy image (standard BIOS test target).
-#
-# Layout:
-#   Sector 0 (bytes    0 –  511): Stage 1 (MBR / boot sector)
-#   Sector 1 (bytes  512 – 1023): Stage 2 start   ← added in Stage 2
-#   Sectors 1–4                 : Stage 2 (4 sectors = 2 KiB)
-#   Sector 5+                   : FAT12 filesystem + kernel  ← Stage 3+
-#
-# 1.44MB = 2880 sectors × 512 bytes
-DISK_SECTORS := 2880
+STAGE2_ASM_INC := $(wildcard $(BOOT_DIR)/*.inc)
+STAGE2_OBJS    := $(BUILD_DIR)/stage2.o
 
-$(DISK_IMG): $(STAGE1_BIN) | $(BUILD_DIR)
-	@echo "[DD]   Creating blank 1.44MB disk image..."
+$(BUILD_DIR)/stage2.o: $(BOOT_DIR)/stage2.asm $(STAGE2_ASM_INC) | $(BUILD_DIR)
+	@echo "[NASM] stage2"
+	$(NASM) $(NASM_FLAGS) -f elf64 -o $@ $<
+
+$(STAGE2_BIN): $(STAGE2_OBJS) $(BOOT_DIR)/stage2.ld
+	@echo "[LD]   stage2"
+	$(LD) -nostdlib -T $(BOOT_DIR)/stage2.ld -o $@ $(STAGE2_OBJS)
+	@echo "[OK]   stage2.bin = $$(stat -c%s $@) bytes (max $$((63 * 512)))"
+
+# =============================================================================
+# Disk image: FAT12 floppy with stage1 as boot sector, stage2 in reserved area
+# =============================================================================
+ROOTFS_FILES := $(wildcard $(ROOTFS_DIR)/*)
+
+$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(ROOTFS_FILES) | $(BUILD_DIR)
+	@echo "[IMG]  $@"
 	$(DD) if=/dev/zero of=$@ bs=512 count=$(DISK_SECTORS) status=none
-
-	@echo "[DD]   Writing stage1 to sector 0..."
 	$(DD) if=$(STAGE1_BIN) of=$@ conv=notrunc bs=512 count=1 status=none
-
-	@echo "[OK]   Disk image: $@ ($$(stat -c%s $@) bytes)"
+	$(DD) if=$(STAGE2_BIN) of=$@ conv=notrunc bs=512 seek=1 status=none
+	@# Empty FAT12 tables: entry 0 = media byte, entry 1 = end-of-chain
+	printf '\xF0\xFF\xFF' | $(DD) of=$@ conv=notrunc bs=1 \
+	    seek=$$(( $(RESERVED_SECTORS) * 512 )) status=none
+	printf '\xF0\xFF\xFF' | $(DD) of=$@ conv=notrunc bs=1 \
+	    seek=$$(( ($(RESERVED_SECTORS) + $(FAT_SECTORS)) * 512 )) status=none
+	@for f in $(ROOTFS_FILES); do \
+	     n=$$(basename $$f | tr a-z A-Z); \
+	     echo "[MCOPY] $$n"; mcopy -i $@ $$f ::$$n || exit 1; \
+	 done
+	@echo "[OK]   $@"
 
 # =============================================================================
-# Run in QEMU (no debugger)
+# Run / debug
 # =============================================================================
 .PHONY: run
 run: $(DISK_IMG)
-	@echo "[QEMU] Booting $(DISK_IMG)..."
 	$(QEMU) $(QEMU_FLAGS)
 
-# =============================================================================
-# Run in QEMU with GDB stub (for debugging, Stage 4+)
-# =============================================================================
+.PHONY: run-headless
+run-headless: $(DISK_IMG)
+	$(QEMU) $(QEMU_FLAGS) -display none
+
+.PHONY: run-floppy
+run-floppy: $(DISK_IMG)
+	$(QEMU) -drive file=$(DISK_IMG),format=raw,if=floppy -boot a \
+	        $(QEMU_COMMON) -serial stdio
+
 .PHONY: debug
 debug: $(DISK_IMG)
-	@echo "[QEMU] Starting with GDB on :1234 (frozen, waiting for GDB)..."
-	@echo "       In another terminal: gdb -x scripts/gdbinit"
+	@echo "[QEMU] Frozen at reset, GDB stub on :1234. In another terminal:"
+	@echo "       gdb -x $(SCRIPTS_DIR)/gdbinit"
 	$(QEMU) $(QEMU_DEBUG_FLAGS)
 
+.PHONY: test
+test: $(DISK_IMG)
+	@$(SCRIPTS_DIR)/test_boot.sh $(DISK_IMG)
+
 # =============================================================================
-# Hex dump helpers — inspect raw binary content
+# Inspection
 # =============================================================================
 .PHONY: hexdump
 hexdump: $(STAGE1_BIN)
-	@echo "=== stage1.bin hex dump (first 64 bytes) ==="
-	xxd -l 64 $(STAGE1_BIN)
-	@echo ""
-	@echo "=== Boot signature (last 2 bytes, should be 55 AA) ==="
-	xxd -s 510 -l 2 $(STAGE1_BIN)
+	@echo "=== stage1.bin (first 64 bytes) ==="
+	@xxd -l 64 $(STAGE1_BIN)
+	@echo "=== Boot signature (should be 55 aa) ==="
+	@xxd -s 510 -l 2 $(STAGE1_BIN)
 
-.PHONY: hexdump-disk
-hexdump-disk: $(DISK_IMG)
-	@echo "=== Disk image sector 0 (bytes 0–511) ==="
-	xxd -l 512 $(DISK_IMG)
-
-# =============================================================================
-# Verify boot signature
-# =============================================================================
 .PHONY: verify
-verify: $(STAGE1_BIN)
-	@sig=$$(xxd -s 510 -l 2 -p $(STAGE1_BIN)); \
-	 if [ "$$sig" = "55aa" ]; then \
-	     echo "[PASS] Boot signature OK: 0x55AA at offset 510"; \
-	 else \
-	     echo "[FAIL] Boot signature MISSING (got: $$sig)"; \
-	     exit 1; \
-	 fi
+verify: $(DISK_IMG)
+	@sig=$$(xxd -s 510 -l 2 -p $(DISK_IMG)); \
+	 if [ "$$sig" = "55aa" ]; then echo "[PASS] Boot signature 0x55AA"; \
+	 else echo "[FAIL] Boot signature missing (got: $$sig)"; exit 1; fi
+	@mdir -i $(DISK_IMG) ::
 
-# =============================================================================
-# Clean
-# =============================================================================
 .PHONY: clean
 clean:
-	@echo "[RM]   Cleaning build artifacts..."
 	rm -rf $(BUILD_DIR)
 
-# =============================================================================
-# Help
-# =============================================================================
 .PHONY: help
 help:
 	@echo ""
-	@echo "Bootloader Project — Available Targets"
-	@echo "======================================="
-	@echo "  make all          Build everything (default)"
-	@echo "  make run          Run in QEMU"
-	@echo "  make debug        Run in QEMU with GDB stub on :1234"
-	@echo "  make hexdump      Hex dump of stage1.bin"
-	@echo "  make hexdump-disk Hex dump of sector 0 in disk image"
-	@echo "  make verify       Verify 0x55AA boot signature"
-	@echo "  make clean        Remove all build output"
-	@echo ""
-	@echo "Current build stage: 1 (minimal boot sector)"
+	@echo "  make all           Build the disk image (default)"
+	@echo "  make run           Boot in QEMU (window + serial on stdio)"
+	@echo "  make run-headless  Boot in QEMU, serial console only"
+	@echo "  make run-floppy    Boot the image as a floppy (drive 0x00)"
+	@echo "  make debug         QEMU frozen with GDB stub on :1234"
+	@echo "  make test          Automated headless boot test"
+	@echo "  make hexdump       Hex dump of stage1.bin"
+	@echo "  make verify        Check boot signature and list the FAT12 root"
+	@echo "  make clean         Remove build/"
 	@echo ""

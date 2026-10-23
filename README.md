@@ -25,8 +25,8 @@ bootloader/
 
 | Stage | Branch of work | Status |
 |-------|---------------|--------|
-| 1 | Minimal boot sector | ✅ This stage |
-| 2 | Disk load via INT 13h | 🔜 |
+| 1 | Minimal boot sector (FAT12 BPB) | ✅ |
+| 2 | Disk load via INT 13h, A20, E820 | ✅ |
 | 3 | FAT12 + file search | 🔜 |
 | 4 | Protected mode (32-bit) | 🔜 |
 | 5 | Long mode (64-bit) | 🔜 |

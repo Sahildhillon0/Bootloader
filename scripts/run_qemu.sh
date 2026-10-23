@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/run_qemu.sh           Normal run
 #   ./scripts/run_qemu.sh --debug   GDB debug mode (waits for GDB on :1234)
-#   ./scripts/run_qemu.sh --nographic  Headless (serial only)
+#   ./scripts/run_qemu.sh --nographic  Headless (serial console on stdio)
 # =============================================================================
 
 set -euo pipefail
@@ -53,12 +53,12 @@ mkdir -p "$LOG_DIR"
 # Base QEMU arguments
 QEMU_ARGS=(
     qemu-system-x86_64
-    -drive "file=${DISK_IMG},format=raw,index=0,media=disk"
+    -drive "file=${DISK_IMG},format=raw,if=ide,index=0,media=disk"
     -m 128M
     -no-reboot
-    -serial "file:${LOG_DIR}/serial.log"
+    -device isa-debug-exit,iobase=0xf4,iosize=0x04
     -D "${LOG_DIR}/qemu.log"
-    -d "int,cpu_reset"
+    -d "int,cpu_reset,guest_errors"
 )
 
 # Parse arguments
@@ -78,20 +78,19 @@ for arg in "$@"; do
 done
 
 if $NOGRAPHIC; then
-    QEMU_ARGS+=(-nographic -serial stdio)
+    QEMU_ARGS+=(-display none -serial stdio)
     info "Running headless (serial on stdio)"
 elif $DEBUG_MODE; then
-    QEMU_ARGS+=(-S -gdb tcp::1234 -monitor stdio)
+    QEMU_ARGS+=(-S -gdb tcp::1234 -monitor stdio -serial "file:${LOG_DIR}/serial.log")
     info "GDB debug mode: QEMU frozen at startup"
     info "In another terminal run: gdb -x scripts/gdbinit"
     info "QEMU monitor available via stdio (Ctrl-A c to toggle)"
 else
-    QEMU_ARGS+=(-monitor stdio)
+    QEMU_ARGS+=(-monitor stdio -serial "file:${LOG_DIR}/serial.log")
     info "Running in display mode (Ctrl-A c = QEMU monitor)"
 fi
 
 info "Disk image : $DISK_IMG"
-info "Serial log : ${LOG_DIR}/serial.log"
 info "QEMU log   : ${LOG_DIR}/qemu.log"
 echo ""
 
