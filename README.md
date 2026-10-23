@@ -50,6 +50,15 @@ the same shell.
 
 ---
 
+## Documentation
+
+- [docs/README.md](docs/README.md): index of all documentation
+- [docs/call-tree.md](docs/call-tree.md): call graphs and a tree of every function (Mermaid)
+- [docs/memory-graph.md](docs/memory-graph.md): memory map, who touches which memory, page tables, stack frames (Mermaid)
+- [docs/reference/](docs/reference): every file and every function, what it does and who calls it
+
+---
+
 ## Build stages
 
 Each stage is one commit in the history and has a deep-dive doc.
@@ -139,7 +148,12 @@ scripts/
   test_boot.py     end-to-end test driver
   run_qemu.sh      QEMU launcher (normal / --debug / --nographic)
   gdbinit          GDB setup for the QEMU stub
-docs/              per-stage deep dives
+docs/
+  README.md        documentation index
+  call-tree.md     call graphs + function tree (Mermaid)
+  memory-graph.md  memory map and function → memory graph (Mermaid)
+  reference/       per-file, per-function reference
+  01..08-*.md      per-stage deep dives
 ```
 
 ---
