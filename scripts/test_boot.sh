@@ -19,6 +19,7 @@ EXPECT=(
     "[STAGE2] E820 memory map"
     "[STAGE2] Loaded HELLO.TXT"
     "Hello from HELLO.TXT"
+    "[STAGE4] 32-bit protected mode"
 )
 
 timeout "$TIMEOUT" qemu-system-x86_64 \

@@ -9,6 +9,7 @@
 ;   2. Enable the A20 line.
 ;   3. Read the BIOS E820 memory map.
 ;   4. Find a file in the FAT12 root directory and load it.
+;   5. Load the GDT and switch to 32-bit protected mode.
 ; =============================================================================
 
 [BITS 16]
@@ -91,9 +92,23 @@ stage2_start:
     loop .echo
     pop  ds
 
-    mov  si, msg_done
+    ; --- Protected mode -------------------------------------------------------
+    mov  si, msg_pm
     call print16
-    jmp  halt16
+
+    ; Remember where the BIOS cursor is; VGA output continues from there
+    mov  ah, 0x03
+    xor  bh, bh
+    int  0x10                   ; DH = row, DL = column
+    mov  [vga_row], dh
+    mov  byte [vga_col], 0
+
+    cli                         ; no IVT in protected mode
+    lgdt [gdt_descriptor]
+    mov  eax, cr0
+    or   eax, 1                 ; CR0.PE
+    mov  cr0, eax
+    jmp  dword CODE32_SEL:pm_entry  ; far jump loads CS, flushes the prefetch queue
 
 .a20_fail:
     mov  si, msg_a20_fail
@@ -122,7 +137,33 @@ halt16:
     hlt
     jmp  halt16
 
+; =============================================================================
+; 32-bit protected mode
+; =============================================================================
+[BITS 32]
+pm_entry:
+    mov  ax, DATA_SEL
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
+    mov  ss, ax
+    mov  esp, 0x7C00
+
+    mov  esi, msg_pm_ok
+    call print32
+
+    mov  esi, msg_done
+    call print32
+.halt:
+    cli
+    hlt
+    jmp  .halt
+[BITS 16]
+
 %include "print16.inc"
+%include "print32.inc"
+%include "gdt.inc"
 %include "a20.inc"
 %include "e820.inc"
 %include "fat12.inc"
@@ -143,6 +184,8 @@ msg_loaded:     db "[STAGE2] Loaded HELLO.TXT from FAT12: 0x", 0
 msg_loaded_tail: db " bytes", 13, 10, 0
 msg_file_missing: db "[STAGE2] FATAL: file not found in FAT12 root", 13, 10, 0
 msg_disk_error: db "[STAGE2] FATAL: disk read failed", 13, 10, 0
+msg_pm:         db "[STAGE2] Entering protected mode", 13, 10, 0
+msg_pm_ok:      db "[STAGE4] 32-bit protected mode, flat 4 GiB segments", 13, 10, 0
 msg_done:       db "[STAGE2] Done, halting", 13, 10, 0
 msg_a20_fail:   db "[STAGE2] FATAL: could not enable A20", 13, 10, 0
 msg_e820_fail:  db "[STAGE2] FATAL: E820 memory map unavailable", 13, 10, 0
@@ -153,6 +196,8 @@ global boot_drive
 boot_drive:     resb 1
 e820_count:     resw 1
 use_ext:        resb 1
+vga_row:        resb 1
+vga_col:        resb 1
 fat_root_lba:   resw 1
 fat_root_secs:  resw 1
 fat_data_lba:   resw 1

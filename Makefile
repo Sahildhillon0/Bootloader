@@ -97,8 +97,8 @@ STAGE2_OBJS    := $(BUILD_DIR)/stage2.o
 
 $(BUILD_DIR)/stage2.o: $(BOOT_DIR)/stage2.asm $(STAGE2_ASM_INC) | $(BUILD_DIR)
 	@echo "[NASM] stage2"
-	@# 16-bit absolute relocations are intended: stage2.ld keeps stage2 below 64 KiB
-	$(NASM) $(NASM_FLAGS) -w-reloc-abs-word -f elf64 -o $@ $<
+	@# 16/32-bit absolute relocations are intended: stage2.ld keeps stage2 below 64 KiB
+	$(NASM) $(NASM_FLAGS) -w-reloc-abs-word -w-reloc-abs-dword -f elf64 -o $@ $<
 
 $(STAGE2_BIN): $(STAGE2_OBJS) $(BOOT_DIR)/stage2.ld
 	@echo "[LD]   stage2"
