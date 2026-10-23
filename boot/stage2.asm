@@ -10,11 +10,14 @@
 ;   3. Read the BIOS E820 memory map.
 ;   4. Find a file in the FAT12 root directory and load it.
 ;   5. Load the GDT and switch to 32-bit protected mode.
+;   6. Build identity-mapped page tables and switch to 64-bit long mode.
 ; =============================================================================
 
 [BITS 16]
+DEFAULT REL                     ; 64-bit code: RIP-relative where possible
 
-LOAD_SEG equ 0x1000             ; files are loaded to physical 0x10000
+LOAD_SEG    equ 0x1000          ; files are loaded to physical 0x10000
+STACK64_TOP equ 0x80000         ; long-mode stack, grows down below the EBDA
 
 extern __bss_start, __bss_end
 
@@ -153,8 +156,39 @@ pm_entry:
     mov  esi, msg_pm_ok
     call print32
 
-    mov  esi, msg_done
+    call check_long_mode
+    jc   .no_lm
+    call setup_paging
+    mov  esi, msg_lm
     call print32
+    jmp  enter_long_mode
+
+.no_lm:
+    mov  esi, msg_no_lm
+    call print32
+.halt:
+    cli
+    hlt
+    jmp  .halt
+
+; =============================================================================
+; 64-bit long mode
+; =============================================================================
+[BITS 64]
+lm_entry:
+    mov  ax, DATA_SEL
+    mov  ds, ax
+    mov  es, ax
+    mov  fs, ax
+    mov  gs, ax
+    mov  ss, ax
+    mov  rsp, STACK64_TOP
+
+    mov  rsi, msg_lm_ok
+    call print64
+
+    mov  rsi, msg_done
+    call print64
 .halt:
     cli
     hlt
@@ -163,6 +197,8 @@ pm_entry:
 
 %include "print16.inc"
 %include "print32.inc"
+%include "print64.inc"
+%include "paging.inc"
 %include "gdt.inc"
 %include "a20.inc"
 %include "e820.inc"
@@ -186,6 +222,9 @@ msg_file_missing: db "[STAGE2] FATAL: file not found in FAT12 root", 13, 10, 0
 msg_disk_error: db "[STAGE2] FATAL: disk read failed", 13, 10, 0
 msg_pm:         db "[STAGE2] Entering protected mode", 13, 10, 0
 msg_pm_ok:      db "[STAGE4] 32-bit protected mode, flat 4 GiB segments", 13, 10, 0
+msg_lm:         db "[STAGE4] Page tables built, entering long mode", 13, 10, 0
+msg_no_lm:      db "[STAGE4] FATAL: CPU does not support 64-bit long mode", 13, 10, 0
+msg_lm_ok:      db "[STAGE5] 64-bit long mode, first 1 GiB identity mapped", 13, 10, 0
 msg_done:       db "[STAGE2] Done, halting", 13, 10, 0
 msg_a20_fail:   db "[STAGE2] FATAL: could not enable A20", 13, 10, 0
 msg_e820_fail:  db "[STAGE2] FATAL: E820 memory map unavailable", 13, 10, 0

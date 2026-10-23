@@ -20,6 +20,7 @@ EXPECT=(
     "[STAGE2] Loaded HELLO.TXT"
     "Hello from HELLO.TXT"
     "[STAGE4] 32-bit protected mode"
+    "[STAGE5] 64-bit long mode"
 )
 
 timeout "$TIMEOUT" qemu-system-x86_64 \
