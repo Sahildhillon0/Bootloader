@@ -87,7 +87,10 @@ fat12_init:
 ; fat12_load_file — load a root-directory file to DX:0000
 ;   DS:SI = 11-byte 8.3 name, space padded ("KERNEL  ELF")
 ;   DX    = destination segment (file may be larger than 64 KiB)
-; Returns CF=0 and EAX = file size on success, CF=1 if the file is missing.
+;   [fat_max_size] = largest file the caller has room for
+; Returns CF=0 and EAX = file size on success.
+; Returns CF=1 with EAX = 0 if the file is missing, or EAX = its size if it is
+; larger than [fat_max_size] (nothing is loaded in that case).
 ; -----------------------------------------------------------------------------
 fat12_load_file:
     push bx
@@ -121,11 +124,14 @@ fat12_load_file:
     add  di, 32
     loop .search
 .not_found:
+    xor  eax, eax
     stc
     jmp  .out
 
 .found:
     mov  eax, [es:di + 28]      ; file size
+    cmp  eax, [fat_max_size]
+    ja   .too_big
     mov  [fat_file_size], eax
     mov  ax, [es:di + 26]       ; first cluster
 
@@ -174,6 +180,9 @@ fat12_load_file:
 .done:
     mov  eax, [fat_file_size]
     clc
+    jmp  .out
+.too_big:
+    stc
 .out:
     pop  fs
     pop  es

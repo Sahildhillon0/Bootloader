@@ -17,10 +17,11 @@ EXPECT=(
     "[STAGE1] Jumping to stage2"
     "[STAGE2] A20 enabled"
     "[STAGE2] E820 memory map"
-    "[STAGE2] Loaded HELLO.TXT"
-    "Hello from HELLO.TXT"
+    "[STAGE3] Loaded KERNEL.ELF"
     "[STAGE4] 32-bit protected mode"
     "[STAGE5] 64-bit long mode"
+    "[STAGE6] ELF segments loaded"
+    "[KERNEL] Hello from the 64-bit C kernel"
 )
 
 timeout "$TIMEOUT" qemu-system-x86_64 \

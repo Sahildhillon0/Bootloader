@@ -8,18 +8,22 @@
 ;   1. Initialise COM1 so every step is visible on the serial console.
 ;   2. Enable the A20 line.
 ;   3. Read the BIOS E820 memory map.
-;   4. Find a file in the FAT12 root directory and load it.
+;   4. Load KERNEL.ELF from the FAT12 root directory to 0x10000.
 ;   5. Load the GDT and switch to 32-bit protected mode.
 ;   6. Build identity-mapped page tables and switch to 64-bit long mode.
+;   7. Hand the ELF image to elf_load() (C), then jump to the kernel entry
+;      point with RDI = &boot_info.
 ; =============================================================================
 
 [BITS 16]
 DEFAULT REL                     ; 64-bit code: RIP-relative where possible
 
-LOAD_SEG    equ 0x1000          ; files are loaded to physical 0x10000
+LOAD_SEG    equ 0x1000          ; KERNEL.ELF is read to physical 0x10000
+KERNEL_MAX  equ 0x50000         ; ...and must end before the FAT buffers at 0x60000
 STACK64_TOP equ 0x80000         ; long-mode stack, grows down below the EBDA
 
 extern __bss_start, __bss_end
+extern elf_load                 ; boot/elf_loader.c
 
 section .text16 progbits alloc exec
 
@@ -68,32 +72,23 @@ stage2_start:
     mov  si, msg_e820_tail
     call print16
 
-    ; --- FAT12: load the file -------------------------------------------------
+    ; --- FAT12: load KERNEL.ELF ----------------------------------------------
     call detect_ext
     call fat12_init
-    mov  si, file_name
+    mov  dword [fat_max_size], KERNEL_MAX
+    mov  si, kernel_name
     mov  dx, LOAD_SEG
     call fat12_load_file
-    jc   .file_missing
-    mov  [file_size], eax
+    jc   .kernel_error
+    mov  [kernel_size], eax
     mov  si, msg_loaded
     call print16
-    mov  ax, [file_size]
+    mov  ax, [kernel_size + 2]
+    call print_hex16
+    mov  ax, [kernel_size]
     call print_hex16
     mov  si, msg_loaded_tail
     call print16
-
-    ; Echo the file to the console
-    push ds
-    mov  cx, [file_size]
-    mov  ax, LOAD_SEG
-    mov  ds, ax
-    xor  si, si
-.echo:
-    lodsb
-    call putc16
-    loop .echo
-    pop  ds
 
     ; --- Protected mode -------------------------------------------------------
     mov  si, msg_pm
@@ -119,8 +114,11 @@ stage2_start:
 .e820_fail:
     mov  si, msg_e820_fail
     jmp  fatal16
-.file_missing:
-    mov  si, msg_file_missing
+.kernel_error:
+    mov  si, msg_kernel_missing
+    test eax, eax               ; EAX = 0: not found, else the oversized length
+    jz   fatal16
+    mov  si, msg_kernel_big
     jmp  fatal16
 
 ; -----------------------------------------------------------------------------
@@ -187,7 +185,39 @@ lm_entry:
     mov  rsi, msg_lm_ok
     call print64
 
-    mov  rsi, msg_done
+    ; --- Load the kernel segments (C) ----------------------------------------
+    mov  edi, LOAD_SEG << 4     ; image
+    mov  esi, [kernel_size]     ; size
+    lea  rdx, [boot_info]       ; boot_info, filled in on success
+    call elf_load
+    test rax, rax
+    jnz  .elf_error
+
+    mov  rsi, msg_elf_ok
+    call print64
+
+    ; --- Hand-off -------------------------------------------------------------
+    mov  dword [boot_info.magic], BOOT_INFO_MAGIC
+    mov  al, [boot_drive]
+    mov  [boot_info.drive], al
+    movzx eax, word [e820_count]
+    mov  [boot_info.mmap_count], eax
+    mov  qword [boot_info.mmap_addr], E820_MAP_ADDR
+    mov  al, [vga_row]          ; last thing: the cursor after our final message
+    mov  [boot_info.vga_row], al
+    mov  al, [vga_col]
+    mov  [boot_info.vga_col], al
+
+    lea  rdi, [boot_info]
+    jmp  [boot_info.entry]
+
+.elf_error:
+    push rax
+    mov  rsi, msg_elf_fail
+    call print64
+    pop  rsi
+    call print64
+    mov  rsi, msg_crlf
     call print64
 .halt:
     cli
@@ -215,19 +245,40 @@ msg_crlf:       db 13, 10, 0
 msg_a20:        db "[STAGE2] A20 enabled", 13, 10, 0
 msg_e820:       db "[STAGE2] E820 memory map: 0x", 0
 msg_e820_tail:  db " entries", 13, 10, 0
-file_name:      db "HELLO   TXT"
-msg_loaded:     db "[STAGE2] Loaded HELLO.TXT from FAT12: 0x", 0
+kernel_name:    db "KERNEL  ELF"
+msg_loaded:     db "[STAGE3] Loaded KERNEL.ELF from FAT12: 0x", 0
 msg_loaded_tail: db " bytes", 13, 10, 0
-msg_file_missing: db "[STAGE2] FATAL: file not found in FAT12 root", 13, 10, 0
+msg_kernel_missing: db "[STAGE3] FATAL: KERNEL.ELF not found in FAT12 root", 13, 10, 0
+msg_kernel_big: db "[STAGE3] FATAL: KERNEL.ELF larger than 320 KiB", 13, 10, 0
 msg_disk_error: db "[STAGE2] FATAL: disk read failed", 13, 10, 0
 msg_pm:         db "[STAGE2] Entering protected mode", 13, 10, 0
 msg_pm_ok:      db "[STAGE4] 32-bit protected mode, flat 4 GiB segments", 13, 10, 0
 msg_lm:         db "[STAGE4] Page tables built, entering long mode", 13, 10, 0
 msg_no_lm:      db "[STAGE4] FATAL: CPU does not support 64-bit long mode", 13, 10, 0
 msg_lm_ok:      db "[STAGE5] 64-bit long mode, first 1 GiB identity mapped", 13, 10, 0
-msg_done:       db "[STAGE2] Done, halting", 13, 10, 0
+msg_elf_ok:     db "[STAGE6] ELF segments loaded, jumping to kernel", 13, 10, 0
+msg_elf_fail:   db "[STAGE6] FATAL: bad kernel ELF: ", 0
 msg_a20_fail:   db "[STAGE2] FATAL: could not enable A20", 13, 10, 0
 msg_e820_fail:  db "[STAGE2] FATAL: E820 memory map unavailable", 13, 10, 0
+
+; -----------------------------------------------------------------------------
+; boot_info — handed to the kernel; layout must match include/bootinfo.h
+; -----------------------------------------------------------------------------
+BOOT_INFO_MAGIC equ 0xB007B007
+
+align 8
+boot_info:
+.magic:         dd 0
+.drive:         db 0
+.vga_row:       db 0
+.vga_col:       db 0
+                db 0
+.mmap_count:    dd 0
+                dd 0
+.mmap_addr:     dq 0
+.kernel_start:  dq 0            ; written by elf_load()
+.kernel_end:    dq 0
+.entry:         dq 0
 
 section .bss
 
@@ -241,4 +292,5 @@ fat_root_lba:   resw 1
 fat_root_secs:  resw 1
 fat_data_lba:   resw 1
 fat_file_size:  resd 1
-file_size:      resd 1
+fat_max_size:   resd 1
+kernel_size:    resd 1

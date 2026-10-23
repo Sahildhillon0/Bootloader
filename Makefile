@@ -48,6 +48,7 @@ CFLAGS := -std=gnu11 -O2 -g -Wall -Wextra \
           -m64 -ffreestanding -fno-builtin -nostdlib \
           -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
           -mno-red-zone -mgeneral-regs-only -mcmodel=small \
+          -fno-tree-loop-distribute-patterns \
           -I$(INCLUDE_DIR)
 
 # mtools refuses some hand-made BPBs without this
@@ -93,12 +94,16 @@ $(STAGE1_BIN): $(BOOT_DIR)/stage1.asm $(BOOT_DIR)/disk.inc | $(BUILD_DIR)
 # Stage 2: real mode → protected mode → long mode loader (asm + C)
 # =============================================================================
 STAGE2_ASM_INC := $(wildcard $(BOOT_DIR)/*.inc)
-STAGE2_OBJS    := $(BUILD_DIR)/stage2.o
+STAGE2_OBJS    := $(BUILD_DIR)/stage2.o $(BUILD_DIR)/elf_loader.o
 
 $(BUILD_DIR)/stage2.o: $(BOOT_DIR)/stage2.asm $(STAGE2_ASM_INC) | $(BUILD_DIR)
 	@echo "[NASM] stage2"
 	@# Absolute relocations are intended: stage2.ld keeps stage2 below 64 KiB
-	$(NASM) $(NASM_FLAGS) -w-reloc-abs-word -w-reloc-abs-dword -w-reloc-abs-qword -f elf64 -o $@ $<
+	$(NASM) $(NASM_FLAGS) -w-reloc -f elf64 -o $@ $<
+
+$(BUILD_DIR)/elf_loader.o: $(BOOT_DIR)/elf_loader.c $(wildcard $(INCLUDE_DIR)/*.h) | $(BUILD_DIR)
+	@echo "[CC]   elf_loader"
+	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(STAGE2_BIN): $(STAGE2_OBJS) $(BOOT_DIR)/stage2.ld
 	@echo "[LD]   stage2"
@@ -106,11 +111,38 @@ $(STAGE2_BIN): $(STAGE2_OBJS) $(BOOT_DIR)/stage2.ld
 	@echo "[OK]   stage2.bin = $$(stat -c%s $@) bytes (max $$((63 * 512)))"
 
 # =============================================================================
+# Kernel: static ELF64 at 1 MiB
+# =============================================================================
+KERNEL_ELF   := $(BUILD_DIR)/kernel.elf
+KERNEL_C     := $(wildcard $(KERNEL_DIR)/*.c)
+KERNEL_ASM   := $(wildcard $(KERNEL_DIR)/*.asm)
+KERNEL_OBJS  := $(patsubst $(KERNEL_DIR)/%.asm,$(BUILD_DIR)/kernel/%.asm.o,$(KERNEL_ASM)) \
+                $(patsubst $(KERNEL_DIR)/%.c,$(BUILD_DIR)/kernel/%.o,$(KERNEL_C))
+KERNEL_HDRS  := $(wildcard $(KERNEL_DIR)/*.h) $(wildcard $(INCLUDE_DIR)/*.h)
+
+$(BUILD_DIR)/kernel:
+	mkdir -p $@
+
+$(BUILD_DIR)/kernel/%.o: $(KERNEL_DIR)/%.c $(KERNEL_HDRS) | $(BUILD_DIR)/kernel
+	@echo "[CC]   $<"
+	$(CC) $(CFLAGS) -I$(KERNEL_DIR) -c -o $@ $<
+
+$(BUILD_DIR)/kernel/%.asm.o: $(KERNEL_DIR)/%.asm | $(BUILD_DIR)/kernel
+	@echo "[NASM] $<"
+	$(NASM) -w+all -w-reloc -f elf64 -o $@ $<
+
+$(KERNEL_ELF): $(KERNEL_OBJS) $(KERNEL_DIR)/kernel.ld
+	@echo "[LD]   kernel.elf"
+	$(LD) -nostdlib -static -z max-page-size=0x1000 -z noexecstack \
+	      -T $(KERNEL_DIR)/kernel.ld -o $@ $(KERNEL_OBJS)
+	@echo "[OK]   kernel.elf = $$(stat -c%s $@) bytes"
+
+# =============================================================================
 # Disk image: FAT12 floppy with stage1 as boot sector, stage2 in reserved area
 # =============================================================================
 ROOTFS_FILES := $(wildcard $(ROOTFS_DIR)/*)
 
-$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(ROOTFS_FILES) | $(BUILD_DIR)
+$(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_ELF) $(ROOTFS_FILES) | $(BUILD_DIR)
 	@echo "[IMG]  $@"
 	$(DD) if=/dev/zero of=$@ bs=512 count=$(DISK_SECTORS) status=none
 	$(DD) if=$(STAGE1_BIN) of=$@ conv=notrunc bs=512 count=1 status=none
@@ -120,6 +152,8 @@ $(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(ROOTFS_FILES) | $(BUILD_DIR)
 	    seek=$$(( $(RESERVED_SECTORS) * 512 )) status=none
 	printf '\xF0\xFF\xFF' | $(DD) of=$@ conv=notrunc bs=1 \
 	    seek=$$(( ($(RESERVED_SECTORS) + $(FAT_SECTORS)) * 512 )) status=none
+	@echo "[MCOPY] KERNEL.ELF"
+	mcopy -i $@ $(KERNEL_ELF) ::KERNEL.ELF
 	@for f in $(ROOTFS_FILES); do \
 	     n=$$(basename $$f | tr a-z A-Z); \
 	     echo "[MCOPY] $$n"; mcopy -i $@ $$f ::$$n || exit 1; \
