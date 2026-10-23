@@ -17,26 +17,26 @@ putc64:
     push rdx
     push rsi
     push rdi
-    mov  ah, al
+    mov  cl, al                 ; keep the character: EAX is reused below
 
     mov  dx, COM1 + 5
 .wait:
     in   al, dx
     test al, 0x20
     jz   .wait
-    mov  al, ah
+    mov  al, cl
     mov  dx, COM1
     out  dx, al
 
-    cmp  ah, 13
+    cmp  cl, 13
     je   .done
-    cmp  ah, 10
+    cmp  cl, 10
     je   .newline
     movzx eax, byte [vga_row]
     imul eax, VGA_COLS
     movzx ebx, byte [vga_col]
     add  eax, ebx
-    mov  byte [VGA_BASE + rax * 2], ah
+    mov  byte [VGA_BASE + rax * 2], cl
     mov  byte [VGA_BASE + rax * 2 + 1], VGA_ATTR
     inc  byte [vga_col]
     cmp  byte [vga_col], VGA_COLS

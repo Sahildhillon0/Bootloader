@@ -152,8 +152,9 @@ $(DISK_IMG): $(STAGE1_BIN) $(STAGE2_BIN) $(KERNEL_ELF) $(ROOTFS_FILES) | $(BUILD
 	    seek=$$(( $(RESERVED_SECTORS) * 512 )) status=none
 	printf '\xF0\xFF\xFF' | $(DD) of=$@ conv=notrunc bs=1 \
 	    seek=$$(( ($(RESERVED_SECTORS) + $(FAT_SECTORS)) * 512 )) status=none
-	@echo "[MCOPY] KERNEL.ELF"
-	mcopy -i $@ $(KERNEL_ELF) ::KERNEL.ELF
+	@echo "[MCOPY] KERNEL.ELF (debug info stripped; build/kernel.elf keeps it for GDB)"
+	objcopy --strip-debug $(KERNEL_ELF) $(BUILD_DIR)/kernel.disk.elf
+	mcopy -i $@ $(BUILD_DIR)/kernel.disk.elf ::KERNEL.ELF
 	@for f in $(ROOTFS_FILES); do \
 	     n=$$(basename $$f | tr a-z A-Z); \
 	     echo "[MCOPY] $$n"; mcopy -i $@ $$f ::$$n || exit 1; \
